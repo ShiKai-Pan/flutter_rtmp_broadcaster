@@ -1,3 +1,4 @@
+
 #import "RtmppublisherPlugin.h"
 #if __has_include("rtmp_broadcaster/rtmp_broadcaster-Swift.h")
 #import <rtmp_broadcaster/rtmp_broadcaster-Swift.h>
@@ -35,9 +36,18 @@ cameraPosition:(AVCaptureDevicePosition)cameraPosition;
 
 @interface FLTImageStreamHandler : NSObject <FlutterStreamHandler>
 @property FlutterEventSink eventSink;
+- (void)sendImageStreamEvent:(id)event;
 @end
 
 @implementation FLTImageStreamHandler
+
+- (void)sendImageStreamEvent:(id)event {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.eventSink) {
+            self.eventSink(event);
+        }
+    });
+}
 
 - (FlutterError *_Nullable)onCancelWithArguments:(id _Nullable)arguments {
     _eventSink = nil;
@@ -227,6 +237,15 @@ FlutterStreamHandler>
 @implementation FLTCam {
     dispatch_queue_t _dispatchQueue;
 }
+
+- (void)sendEvent:(id)event {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_eventSink) {
+            self->_eventSink(event);
+        }
+    });
+}
+
 // Format used for video and image streaming.
 FourCharCode const videoFormat = kCVPixelFormatType_32BGRA;
 
@@ -434,70 +453,72 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         }
     }
     if (!CMSampleBufferDataIsReady(sampleBuffer)) {
-        _eventSink(@{
+        [self sendEvent:@{
             @"event" : @"error",
             @"errorDescription" : @"sample buffer is not ready. Skipping sample"
-                   });
+        }];
         return;
     }
     if (_isStreamingImages) {
-        if (_imageStreamHandler.eventSink) {
-            CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
-            CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-            
-            size_t imageWidth = CVPixelBufferGetWidth(pixelBuffer);
-            size_t imageHeight = CVPixelBufferGetHeight(pixelBuffer);
-            
-            NSMutableArray *planes = [NSMutableArray array];
-            
-            const Boolean isPlanar = CVPixelBufferIsPlanar(pixelBuffer);
-            size_t planeCount;
-            if (isPlanar) {
-                planeCount = CVPixelBufferGetPlaneCount(pixelBuffer);
-            } else {
-                planeCount = 1;
-            }
-            
-            for (int i = 0; i < planeCount; i++) {
-                void *planeAddress;
-                size_t bytesPerRow;
-                size_t height;
-                size_t width;
+        dispatch_async(dispatch_get_main_queue(), ^{
+                if (self->_imageStreamHandler.eventSink) {
+                CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+                CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
                 
+                size_t imageWidth = CVPixelBufferGetWidth(pixelBuffer);
+                size_t imageHeight = CVPixelBufferGetHeight(pixelBuffer);
+                
+                NSMutableArray *planes = [NSMutableArray array];
+                
+                const Boolean isPlanar = CVPixelBufferIsPlanar(pixelBuffer);
+                size_t planeCount;
                 if (isPlanar) {
-                    planeAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, i);
-                    bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, i);
-                    height = CVPixelBufferGetHeightOfPlane(pixelBuffer, i);
-                    width = CVPixelBufferGetWidthOfPlane(pixelBuffer, i);
+                    planeCount = CVPixelBufferGetPlaneCount(pixelBuffer);
                 } else {
-                    planeAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
-                    bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
-                    height = CVPixelBufferGetHeight(pixelBuffer);
-                    width = CVPixelBufferGetWidth(pixelBuffer);
+                    planeCount = 1;
                 }
                 
-                NSNumber *length = @(bytesPerRow * height);
-                NSData *bytes = [NSData dataWithBytes:planeAddress length:length.unsignedIntegerValue];
+                for (int i = 0; i < planeCount; i++) {
+                    void *planeAddress;
+                    size_t bytesPerRow;
+                    size_t height;
+                    size_t width;
+                    
+                    if (isPlanar) {
+                        planeAddress = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, i);
+                        bytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, i);
+                        height = CVPixelBufferGetHeightOfPlane(pixelBuffer, i);
+                        width = CVPixelBufferGetWidthOfPlane(pixelBuffer, i);
+                    } else {
+                        planeAddress = CVPixelBufferGetBaseAddress(pixelBuffer);
+                        bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+                        height = CVPixelBufferGetHeight(pixelBuffer);
+                        width = CVPixelBufferGetWidth(pixelBuffer);
+                    }
+                    
+                    NSNumber *length = @(bytesPerRow * height);
+                    NSData *bytes = [NSData dataWithBytes:planeAddress length:length.unsignedIntegerValue];
+                    
+                    NSMutableDictionary *planeBuffer = [NSMutableDictionary dictionary];
+                    planeBuffer[@"bytesPerRow"] = @(bytesPerRow);
+                    planeBuffer[@"width"] = @(width);
+                    planeBuffer[@"height"] = @(height);
+                    planeBuffer[@"bytes"] = [FlutterStandardTypedData typedDataWithBytes:bytes];
+                    
+                    [planes addObject:planeBuffer];
+                }
                 
-                NSMutableDictionary *planeBuffer = [NSMutableDictionary dictionary];
-                planeBuffer[@"bytesPerRow"] = @(bytesPerRow);
-                planeBuffer[@"width"] = @(width);
-                planeBuffer[@"height"] = @(height);
-                planeBuffer[@"bytes"] = [FlutterStandardTypedData typedDataWithBytes:bytes];
+                NSMutableDictionary *imageBuffer = [NSMutableDictionary dictionary];
+                imageBuffer[@"width"] = [NSNumber numberWithUnsignedLong:imageWidth];
+                imageBuffer[@"height"] = [NSNumber numberWithUnsignedLong:imageHeight];
+                imageBuffer[@"format"] = @(videoFormat);
+                imageBuffer[@"planes"] = planes;
                 
-                [planes addObject:planeBuffer];
+                self->_imageStreamHandler.eventSink(imageBuffer);
+                
+                CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
             }
-            
-            NSMutableDictionary *imageBuffer = [NSMutableDictionary dictionary];
-            imageBuffer[@"width"] = [NSNumber numberWithUnsignedLong:imageWidth];
-            imageBuffer[@"height"] = [NSNumber numberWithUnsignedLong:imageHeight];
-            imageBuffer[@"format"] = @(videoFormat);
-            imageBuffer[@"planes"] = planes;
-            
-            _imageStreamHandler.eventSink(imageBuffer);
-            
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
-        }
+        });
     }
     if (_isStreaming && !_isStreamingPaused) {
         CFRetain(sampleBuffer);
@@ -1089,10 +1110,10 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
                 [_registry textureFrameAvailable:textureId];
             };
             FlutterEventChannel *eventChannel = [FlutterEventChannel
-                                                 eventChannelWithName:[NSString
-                                                                       stringWithFormat:@"plugins.flutter.io/rtmp_publisher/cameraEvents%lld",
-                                                                       textureId]
-                                                 binaryMessenger:_messenger];
+                                                        eventChannelWithName:[NSString
+                                                                              stringWithFormat:@"plugins.flutter.io/rtmp_publisher/cameraEvents%lld",
+                                                                              textureId]
+                                                        binaryMessenger:_messenger];
             [eventChannel setStreamHandler:cam];
             cam.eventChannel = eventChannel;
             result(@{
@@ -1123,8 +1144,12 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
         [_camera resumeVideoStreaming];
         result(nil);
     } else if ([@"getStreamStatistics" isEqualToString:call.method]) {
-        NSDictionary *dict = [_camera getStreamStatistics];
-        result(dict);
+        dispatch_async(_dispatchQueue, ^{
+            NSDictionary *dict = [self->_camera getStreamStatistics];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                result(dict);
+            });
+        });
     } else {
         NSDictionary *argsMap = call.arguments;
         NSUInteger textureId = ((NSNumber *)argsMap[@"textureId"]).unsignedIntegerValue;
@@ -1140,11 +1165,17 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
             [_camera setUpCaptureSessionForAudio];
             result(nil);
         } else if ([@"startVideoRecording" isEqualToString:call.method]) {
-            [_camera startVideoRecordingAtPath:call.arguments[@"filePath"] result:result];
+            dispatch_async(_dispatchQueue, ^{
+                [self->_camera startVideoRecordingAtPath:call.arguments[@"filePath"] result:result];
+            });
         } else if ([@"startVideoStreaming" isEqualToString:call.method]) {
-            [_camera startVideoStreamingAtUrl:call.arguments[@"url"] bitrate:call.arguments[@"bitrate"] result:result];
+            dispatch_async(_dispatchQueue, ^{
+                [self->_camera startVideoStreamingAtUrl:call.arguments[@"url"] bitrate:call.arguments[@"bitrate"] result:result];
+            });
         } else if ([@"startVideoRecordingAndStreaming" isEqualToString:call.method]) {
-            [_camera startVideoRecordingAndStreamingAtUrl:call.arguments[@"url"] bitrate:call.arguments[@"bitrate"] filePath:call.arguments[@"filePath"] result:result];
+            dispatch_async(_dispatchQueue, ^{
+                [self->_camera startVideoRecordingAndStreamingAtUrl:call.arguments[@"url"] bitrate:call.arguments[@"bitrate"] filePath:call.arguments[@"filePath"] result:result];
+            });
         } else if ([@"stopStreaming" isEqualToString:call.method]) {
             [_camera stopVideoStreamingWithResult:result];
         } else if ([@"stopRecording" isEqualToString:call.method]) {
