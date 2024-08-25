@@ -741,33 +741,37 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 
 
 - (void)startVideoStreamingAtUrl:(NSString *)url bitrate:(NSNumber *)bitrate result:(FlutterResult)result {
-    if (_isStreaming) {
-        _eventSink(@{@"event" : @"error", @"errorDescription" : @"Video is already streaming!"});
-    }
-    if (!_isStreaming) {
-        if (![self setupWriterForUrl:url ]) {
-            _eventSink(@{@"event" : @"error", @"errorDescription" : @"Setup Writer Failed"});
+    dispatch_async(_dispatchQueue, ^{
+        if (self->_isStreaming) {
+            self->_eventSink(@{@"event" : @"error", @"errorDescription" : @"Video is already streaming!"});
+            result(nil);
+            return;
+        }
+        if (![self setupWriterForUrl:url]) {
+            self->_eventSink(@{@"event" : @"error", @"errorDescription" : @"Setup Writer Failed"});
+            result(nil);
             return;
         }
         
-        _rtmpStream = [[FlutterRTMPStreaming alloc] initWithSink: _eventSink];
+        self->_rtmpStream = [[FlutterRTMPStreaming alloc] initWithSink: self->_eventSink];
         if (bitrate == nil || bitrate == 0) {
             bitrate = [NSNumber numberWithInt:160 * 1000];
         }
         
-        // TODO: FIX
-        // [self newAudioSample:sampleBuffer];
-        [self setStreamingSessionPreset:_streamingPreset];
+        [self setStreamingSessionPreset:self->_streamingPreset];
         
-        [_rtmpStream openWithUrl:url width: _streamingSize.width height: _streamingSize.height bitrate: bitrate.integerValue];
-        _isStreaming = YES;
-        _isStreamingPaused = NO;
-        _videoTimeOffset = CMTimeMake(0, 1);
-        _audioTimeOffset = CMTimeMake(0, 1);
-        _videoIsDisconnected = NO;
-        _audioIsDisconnected = NO;
-        result(nil);
-    }
+        [self->_rtmpStream openWithUrl:url width: self->_streamingSize.width height: self->_streamingSize.height bitrate: bitrate.integerValue];
+        self->_isStreaming = YES;
+        self->_isStreamingPaused = NO;
+        self->_videoTimeOffset = CMTimeMake(0, 1);
+        self->_audioTimeOffset = CMTimeMake(0, 1);
+        self->_videoIsDisconnected = NO;
+        self->_audioIsDisconnected = NO;
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            result(nil);
+        });
+    });
 }
 
 
